@@ -108,9 +108,9 @@ session list prompt automatically."
 (defun agent-shell-bookmark--counsel-transformer (candidate)
   "Annotate CANDIDATE with bookmark type and location for `counsel-bookmark'."
   (let* ((record (bookmark-get-bookmark-record candidate))
-         (type (if record
-                   (bookmark-type-from-full-record (cons candidate record))
-                 ""))
+         (type (or (and record
+                        (bookmark-type-from-full-record (cons candidate record)))
+                   ""))
          (loc (bookmark-location candidate)))
     (format "%-40s %-14s %s"
             candidate
