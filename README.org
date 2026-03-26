@@ -58,6 +58,10 @@ If =counsel= and =ivy= are loaded, =counsel-bookmark= candidates are automatical
 | agent-shell   | /path/to/project/     |
 | file          | /path/to/file.el      |
 
+* Disclaimer
+
+This package was vibe-coded with the assistance of an LLM (Claude). If that is a concern for you, please consider this before using it.
+
 * Dependencies
 
 - Emacs 28.1+
