@@ -5,6 +5,8 @@ Bookmark support for [[https://github.com/xenodium/agent-shell][agent-shell]] se
 
 Jump to a bookmarked session and it will reopen automatically — switching to the buffer if already open, resuming by session ID, or falling back to the session list prompt when the session is stale.
 
+[[file:demo.gif]]
+
 * Installation
 
 ** straight.el
