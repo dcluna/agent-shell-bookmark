@@ -56,35 +56,52 @@
   (let ((session-id (and (boundp 'agent-shell--state)
                          agent-shell--state
                          (map-nested-elt agent-shell--state '(:session :id))))
+        (agent-id (and (boundp 'agent-shell--state)
+                       agent-shell--state
+                       (map-nested-elt agent-shell--state '(:agent-config :identifier))))
         (buf-name (buffer-name))
         (project-path (expand-file-name default-directory)))
     `(,buf-name
       (handler . agent-shell-bookmark-handler)
       (location . ,project-path)
       (session-id . ,session-id)
+      (agent-identifier . ,agent-id)
       (buffer-name . ,buf-name)
       (project-path . ,project-path))))
 
 ;;; Bookmark jump handler
 
+(defun agent-shell-bookmark--find-config (agent-identifier)
+  "Find the agent config matching AGENT-IDENTIFIER in `agent-shell-agent-configs'."
+  (and agent-identifier
+       (seq-find (lambda (config)
+                   (eq (map-elt config :identifier) agent-identifier))
+                 agent-shell-agent-configs)))
+
 (defun agent-shell-bookmark-handler (bmk)
   "Handle jumping to an agent-shell bookmark BMK.
 If the original buffer is still live, switch to it.
-Otherwise, resume the session by its stored ID.  When the session
-ID is stale, `agent-shell-resume-session' falls back to the
-session list prompt automatically."
+Otherwise, resume the session by its stored ID using the same
+agent that created it.  When the session ID is stale,
+`agent-shell-resume-session' falls back to the session list
+prompt automatically."
   (let* ((buf-name (bookmark-prop-get bmk 'buffer-name))
          (session-id (bookmark-prop-get bmk 'session-id))
          (project-path (bookmark-prop-get bmk 'project-path))
+         (agent-identifier (bookmark-prop-get bmk 'agent-identifier))
          (buf (and buf-name (get-buffer buf-name))))
     (cond
      ;; Buffer already open — just switch to it.
      ((and buf (buffer-live-p buf))
       (set-buffer buf))
-     ;; Session ID available — try to resume (falls back to session list).
+     ;; Session ID available — try to resume with the stored agent config.
      (session-id
-      (let ((default-directory (or project-path default-directory)))
-        (agent-shell-resume-session session-id)))
+      (let* ((default-directory (or project-path default-directory))
+             (config (or (agent-shell-bookmark--find-config agent-identifier)
+                         (agent-shell--resolve-preferred-config)
+                         (agent-shell-select-config
+                          :prompt "Resume with agent: "))))
+        (agent-shell-start :config config :session-id session-id)))
      ;; No session ID — start fresh with session prompt.
      (t
       (let ((default-directory (or project-path default-directory)))

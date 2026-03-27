@@ -9,6 +9,7 @@
 (require 'ert)
 (require 'bookmark)
 (require 'map)
+(require 'seq)
 
 ;; Minimal stubs so we can load agent-shell-bookmark without the real
 ;; agent-shell package and its transitive dependencies.
@@ -16,7 +17,11 @@
 (unless (featurep 'agent-shell)
   (defvar agent-shell--state nil)
   (defvar agent-shell-mode-hook nil)
+  (defvar agent-shell-agent-configs nil)
   (defun agent-shell-resume-session (_session-id) nil)
+  (defun agent-shell-start (&rest _args) nil)
+  (defun agent-shell-select-config (&rest _args) nil)
+  (defun agent-shell--resolve-preferred-config () nil)
   (defun agent-shell () nil)
   (provide 'agent-shell))
 
@@ -51,6 +56,17 @@
         (should (equal (alist-get 'session-id (cdr record))
                        "sess-abc-123"))))))
 
+(ert-deftest agent-shell-bookmark-test-make-record-with-agent-identifier ()
+  "Record captures agent identifier from agent-shell--state."
+  (with-temp-buffer
+    (rename-buffer "Claude Agent @ proj" t)
+    (let ((default-directory "/tmp/proj/")
+          (agent-shell--state `((:session . ((:id . "sess-abc-123")))
+                                (:agent-config . ((:identifier . claude-code))))))
+      (let ((record (agent-shell-bookmark-make-record)))
+        (should (eq (alist-get 'agent-identifier (cdr record))
+                    'claude-code))))))
+
 (ert-deftest agent-shell-bookmark-test-make-record-nil-session ()
   "Record has nil session-id when state has no session."
   (with-temp-buffer
@@ -67,6 +83,29 @@
   (should (equal (get 'agent-shell-bookmark-handler 'bookmark-handler-type)
                  "agent-shell")))
 
+;;; --- find-config ---
+
+(ert-deftest agent-shell-bookmark-test-find-config-match ()
+  "Find config returns matching config from agent-shell-agent-configs."
+  (let ((agent-shell-agent-configs
+         `(((:identifier . claude-code) (:buffer-name . "Claude"))
+           ((:identifier . gemini) (:buffer-name . "Gemini")))))
+    (let ((config (agent-shell-bookmark--find-config 'claude-code)))
+      (should config)
+      (should (eq (map-elt config :identifier) 'claude-code)))))
+
+(ert-deftest agent-shell-bookmark-test-find-config-no-match ()
+  "Find config returns nil when no matching config exists."
+  (let ((agent-shell-agent-configs
+         `(((:identifier . claude-code) (:buffer-name . "Claude")))))
+    (should (null (agent-shell-bookmark--find-config 'nonexistent)))))
+
+(ert-deftest agent-shell-bookmark-test-find-config-nil-identifier ()
+  "Find config returns nil for nil identifier."
+  (let ((agent-shell-agent-configs
+         `(((:identifier . claude-code) (:buffer-name . "Claude")))))
+    (should (null (agent-shell-bookmark--find-config nil)))))
+
 ;;; --- bookmark handler dispatch ---
 
 (ert-deftest agent-shell-bookmark-test-handler-switches-to-live-buffer ()
@@ -77,23 +116,51 @@
                      (handler . agent-shell-bookmark-handler)
                      (buffer-name . ,(buffer-name test-buf))
                      (session-id . "sess-123")
+                     (agent-identifier . claude-code)
                      (project-path . "/tmp/test/"))))
           (agent-shell-bookmark-handler bmk)
           (should (eq (current-buffer) test-buf)))
       (kill-buffer test-buf))))
 
-(ert-deftest agent-shell-bookmark-test-handler-resumes-session-when-buffer-gone ()
-  "Handler calls `agent-shell-resume-session' when buffer does not exist."
-  (let ((resumed-id nil))
-    (cl-letf (((symbol-function 'agent-shell-resume-session)
-               (lambda (sid) (setq resumed-id sid))))
+(ert-deftest agent-shell-bookmark-test-handler-resumes-with-stored-agent ()
+  "Handler uses stored agent config when resuming a session."
+  (let ((started-config nil)
+        (started-session-id nil)
+        (agent-shell-agent-configs
+         `(((:identifier . claude-code) (:buffer-name . "Claude"))
+           ((:identifier . gemini) (:buffer-name . "Gemini")))))
+    (cl-letf (((symbol-function 'agent-shell-start)
+               (lambda (&rest args)
+                 (setq started-config (plist-get args :config)
+                       started-session-id (plist-get args :session-id)))))
       (let ((bmk `("Gone Agent @ test"
                    (handler . agent-shell-bookmark-handler)
                    (buffer-name . "Nonexistent Buffer 999")
                    (session-id . "sess-xyz-789")
+                   (agent-identifier . claude-code)
                    (project-path . "/tmp/gone/"))))
         (agent-shell-bookmark-handler bmk)
-        (should (equal resumed-id "sess-xyz-789"))))))
+        (should (equal started-session-id "sess-xyz-789"))
+        (should (eq (map-elt started-config :identifier) 'claude-code))))))
+
+(ert-deftest agent-shell-bookmark-test-handler-falls-back-when-agent-unknown ()
+  "Handler falls back to preferred/select config when stored agent is not found."
+  (let ((started-config nil)
+        (agent-shell-agent-configs
+         `(((:identifier . claude-code) (:buffer-name . "Claude")))))
+    (cl-letf (((symbol-function 'agent-shell-start)
+               (lambda (&rest args)
+                 (setq started-config (plist-get args :config))))
+              ((symbol-function 'agent-shell--resolve-preferred-config)
+               (lambda () '((:identifier . fallback) (:buffer-name . "Fallback")))))
+      (let ((bmk `("Gone Agent @ test"
+                   (handler . agent-shell-bookmark-handler)
+                   (buffer-name . "Nonexistent Buffer 996")
+                   (session-id . "sess-xyz-789")
+                   (agent-identifier . nonexistent-agent)
+                   (project-path . "/tmp/gone/"))))
+        (agent-shell-bookmark-handler bmk)
+        (should (eq (map-elt started-config :identifier) 'fallback))))))
 
 (ert-deftest agent-shell-bookmark-test-handler-starts-fresh-without-session-id ()
   "Handler calls `agent-shell' when no session ID and no buffer."
@@ -109,14 +176,17 @@
         (should called)))))
 
 (ert-deftest agent-shell-bookmark-test-handler-sets-default-directory ()
-  "Handler sets `default-directory' to project-path for resume and fresh start."
-  (let ((captured-dir nil))
-    (cl-letf (((symbol-function 'agent-shell-resume-session)
-               (lambda (_sid) (setq captured-dir default-directory))))
+  "Handler sets `default-directory' to project-path for resume."
+  (let ((captured-dir nil)
+        (agent-shell-agent-configs
+         `(((:identifier . claude-code) (:buffer-name . "Claude")))))
+    (cl-letf (((symbol-function 'agent-shell-start)
+               (lambda (&rest _args) (setq captured-dir default-directory))))
       (let ((bmk `("Dir Agent @ test"
                    (handler . agent-shell-bookmark-handler)
                    (buffer-name . "Nonexistent Buffer 997")
                    (session-id . "sess-dir-test")
+                   (agent-identifier . claude-code)
                    (project-path . "/tmp/dirtest/"))))
         (agent-shell-bookmark-handler bmk)
         (should (equal captured-dir "/tmp/dirtest/"))))))
@@ -170,7 +240,8 @@
           (with-current-buffer test-buf
             (let ((default-directory "/tmp/roundtrip/")
                   (agent-shell--state
-                   `((:session . ((:id . "sess-rt-001"))))))
+                   `((:session . ((:id . "sess-rt-001")))
+                     (:agent-config . ((:identifier . claude-code))))))
               (agent-shell-bookmark--setup)
               (bookmark-set "rt-test" t)))
           ;; Jump from a different buffer.
