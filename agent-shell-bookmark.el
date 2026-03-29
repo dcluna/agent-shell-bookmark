@@ -5,7 +5,7 @@
 ;; Author: Daniel Luna
 ;; URL: https://github.com/dcluna/agent-shell-bookmark
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "28.1") (agent-shell "0.1.0"))
+;; Package-Requires: ((emacs "29.1") (agent-shell "0.50.1"))
 ;; Keywords: convenience, tools
 
 ;; This file is not part of GNU Emacs.
@@ -79,7 +79,7 @@
                  agent-shell-agent-configs)))
 
 (defun agent-shell-bookmark-handler (bmk)
-  "Handle jumping to an agent-shell bookmark BMK.
+  "Handle jumping to an `agent-shell' bookmark BMK.
 If the original buffer is still live, switch to it.
 Otherwise, resume the session by its stored ID using the same
 agent that created it.  When the session ID is stale,
