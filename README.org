@@ -60,6 +60,44 @@ If =counsel= and =ivy= are loaded, =counsel-bookmark= candidates are automatical
 | agent-shell   | /path/to/project/     |
 | file          | /path/to/file.el      |
 
+* Org-link support
+
+The =agent-shell-ol= module provides an org-link type for agent-shell sessions.  Store a link to a running session and follow it later to resume the exact conversation.
+
+** Installation
+
+Add to your config alongside =agent-shell-bookmark=:
+
+#+begin_src emacs-lisp
+(require 'agent-shell-ol)
+#+end_src
+
+** Usage
+
+In any =agent-shell= buffer, store a link with:
+
+- =C-c l= (=org-store-link=)
+
+Then in an org buffer, insert it with:
+
+- =C-c C-l= (=org-insert-link=)
+
+Follow the link with:
+
+- =C-c C-o= (=org-open-at-point=)
+
+The stored link looks like:
+
+#+begin_example
+[[agent-shell:/path/to/project::session-id::agent-id][Buffer Name]]
+#+end_example
+
+** What happens when you follow a link
+
+1. If a buffer with the stored session ID is still open, switch to it.
+2. If no buffer exists but the session ID is known, resume the session with =agent-shell-start=.
+3. If no session ID was stored (deferred session), offer to spawn a new agent in the stored project directory.
+
 * Disclaimer
 
 This package was vibe-coded with the assistance of an LLM (Claude). If that is a concern for you, please consider this before using it.
