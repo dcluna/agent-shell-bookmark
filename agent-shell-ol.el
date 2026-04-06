@@ -30,10 +30,11 @@
 ;; When this package is loaded, `org-store-link' in an `agent-shell-mode'
 ;; buffer captures a link of the form:
 ;;
-;;   [[agent-shell:/path/to/project::Buffer Name][Buffer Name]]
+;;   [[agent-shell:/path/to/project::session-id::agent-id][Buffer Name]]
 ;;
-;; Following such a link switches to the buffer if it is live, or
-;; offers to spawn a new agent session in the stored project directory.
+;; Following such a link finds the buffer by session ID if it is live,
+;; resumes the session if the buffer is gone, or offers to spawn a new
+;; agent session when no session ID was stored.
 ;;
 ;; Usage:
 ;;
@@ -42,17 +43,47 @@
 ;;; Code:
 
 (require 'ol)
+(require 'map)
 (require 'agent-shell)
 
 ;;; Path parsing
 
 (defun agent-shell-ol--parse-path (path)
-  "Parse PATH of the form \"project-dir::buffer-name\".
-Split on the first occurrence of \"::\".  Return a cons cell
-\(PROJECT-DIR . BUFFER-NAME), or nil if no \"::\" separator is found."
-  (when-let ((pos (string-search "::" path)))
-    (cons (substring path 0 pos)
-          (substring path (+ pos 2)))))
+  "Parse PATH of the form \"project-dir::session-id::agent-id\".
+Split on the first two occurrences of \"::\".  Return a plist
+\(:project-dir PROJECT-DIR :session-id SESSION-ID :agent-id AGENT-ID),
+or nil if fewer than two \"::\" separators are found."
+  (when-let ((pos1 (string-search "::" path)))
+    (let ((rest (substring path (+ pos1 2))))
+      (when-let ((pos2 (string-search "::" rest)))
+        (list :project-dir (substring path 0 pos1)
+              :session-id (substring rest 0 pos2)
+              :agent-id (substring rest (+ pos2 2)))))))
+
+;;; Helpers
+
+(defun agent-shell-ol--find-buffer-by-session-id (session-id)
+  "Find a live agent-shell buffer whose session matches SESSION-ID.
+Return the buffer or nil."
+  (and (not (string-empty-p session-id))
+       (seq-find
+        (lambda (buf)
+          (and (buffer-live-p buf)
+               (equal session-id
+                      (map-nested-elt
+                       (buffer-local-value 'agent-shell--state buf)
+                       '(:session :id)))))
+        (agent-shell-buffers))))
+
+(defun agent-shell-ol--find-config (agent-id)
+  "Find the agent config matching AGENT-ID in `agent-shell-agent-configs'.
+AGENT-ID is a string; configs store identifiers as symbols."
+  (and agent-id
+       (not (string-empty-p agent-id))
+       (let ((sym (intern agent-id)))
+         (seq-find (lambda (config)
+                     (eq (map-elt config :identifier) sym))
+                   agent-shell-agent-configs))))
 
 ;;; Store link
 
@@ -61,8 +92,22 @@ Split on the first occurrence of \"::\".  Return a cons cell
 Return the link string on success, nil otherwise."
   (when (derived-mode-p 'agent-shell-mode)
     (let* ((project-dir (expand-file-name default-directory))
+           (session-id (or (and (boundp 'agent-shell--state)
+                                agent-shell--state
+                                (map-nested-elt agent-shell--state
+                                                '(:session :id)))
+                           ""))
+           (agent-id (or (and (boundp 'agent-shell--state)
+                              agent-shell--state
+                              (let ((id (map-nested-elt
+                                         agent-shell--state
+                                         '(:agent-config :identifier))))
+                                (and id (symbol-name id))))
+                         ""))
            (buf-name (buffer-name))
-           (link (concat "agent-shell:" project-dir "::" buf-name)))
+           (link (concat "agent-shell:" project-dir
+                         "::" session-id
+                         "::" agent-id)))
       (org-link-store-props
        :type "agent-shell"
        :link link
@@ -73,22 +118,39 @@ Return the link string on success, nil otherwise."
 
 (defun agent-shell-ol-follow (path _arg)
   "Follow an agent-shell link with PATH.
-If the target buffer is live, switch to it.  Otherwise, offer to
-spawn a new agent session in the stored project directory."
+If a buffer with the stored session ID is live, switch to it.
+If the session ID is non-empty but no buffer exists, resume the
+session.  If the session ID is empty, offer to spawn a new one."
   (if-let ((parsed (agent-shell-ol--parse-path path)))
-      (let ((project-dir (car parsed))
-            (buf-name (cdr parsed)))
-        (if-let ((buf (get-buffer buf-name))
-                 (_live (buffer-live-p buf)))
-            (pop-to-buffer buf)
-          (if (y-or-n-p (format "Agent \"%s\" not found. Spawn a new one?" buf-name))
+      (let ((project-dir (plist-get parsed :project-dir))
+            (session-id (plist-get parsed :session-id))
+            (agent-id (plist-get parsed :agent-id)))
+        (cond
+         ;; Find existing buffer by session ID.
+         ((and (not (string-empty-p session-id))
+               (when-let ((buf (agent-shell-ol--find-buffer-by-session-id
+                                session-id)))
+                 (pop-to-buffer buf)
+                 t)))
+         ;; Resume session.
+         ((not (string-empty-p session-id))
+          (let* ((default-directory project-dir)
+                 (config (or (agent-shell-ol--find-config agent-id)
+                             (agent-shell--resolve-preferred-config)
+                             (agent-shell-select-config
+                              :prompt "Resume with agent: "))))
+            (agent-shell-start :config config :session-id session-id)))
+         ;; Spawn fresh (empty session-id).
+         (t
+          (if (y-or-n-p "No session ID stored. Spawn a new agent?")
               (let ((default-directory project-dir)
                     (agent-shell-session-strategy 'new))
-                (let ((config (or (agent-shell--resolve-preferred-config)
+                (let ((config (or (agent-shell-ol--find-config agent-id)
+                                  (agent-shell--resolve-preferred-config)
                                   (agent-shell-select-config
                                    :prompt "Spawn with agent: "))))
                   (agent-shell-start :config config)))
-            (message "Link target not available: %s" buf-name))))
+            (message "Link not followed.")))))
     (user-error "Invalid agent-shell link: %s" path)))
 
 ;;; Registration
