@@ -80,20 +80,30 @@
 
 (defun agent-shell-bookmark-handler (bmk)
   "Handle jumping to an `agent-shell' bookmark BMK.
-If the original buffer is still live, switch to it.
-Otherwise, resume the session by its stored ID using the same
-agent that created it.  When the session ID is stale,
-`agent-shell-resume-session' falls back to the session list
-prompt automatically."
+If the original buffer is still live, ask whether to switch to it
+or resume a fresh session.  Otherwise, resume the session by its
+stored ID using the same agent that created it.  When the session
+ID is stale, `agent-shell-resume-session' falls back to the
+session list prompt automatically."
   (let* ((buf-name (bookmark-prop-get bmk 'buffer-name))
          (session-id (bookmark-prop-get bmk 'session-id))
          (project-path (bookmark-prop-get bmk 'project-path))
          (agent-identifier (bookmark-prop-get bmk 'agent-identifier))
          (buf (and buf-name (get-buffer buf-name))))
     (cond
-     ;; Buffer already open — just switch to it.
+     ;; Buffer already open — ask whether to reuse or resume fresh.
      ((and buf (buffer-live-p buf))
-      (set-buffer buf))
+      (if (y-or-n-p (format "Buffer `%s' exists.  Switch to it? " buf-name))
+          (set-buffer buf)
+        (if session-id
+            (let* ((default-directory (or project-path default-directory))
+                   (config (or (agent-shell-bookmark--find-config agent-identifier)
+                               (agent-shell--resolve-preferred-config)
+                               (agent-shell-select-config
+                                :prompt "Resume with agent: "))))
+              (agent-shell-start :config config :session-id session-id))
+          (let ((default-directory (or project-path default-directory)))
+            (agent-shell)))))
      ;; Session ID available — try to resume with the stored agent config.
      (session-id
       (let* ((default-directory (or project-path default-directory))
